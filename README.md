@@ -43,10 +43,11 @@ This is probably the hardest step. When you create a distribution, you're creati
 #8. Change/Create new Route53 A and CNAME Record to point to Cloudfront instead of Load Balancing.
 In my case, I was using this domain without SSL, so it was "looking" to the Load Balancing directly. In this step, all you need to do is update it to look to Cloudfront distribution you've just created.
 So the recordsets should be like: 
-example.com - A - d12837192379127.cloudfront.net (fake address)
-*.example.com - CNAME - example.com (just some idea)
+- example.com - A - d12837192379127.cloudfront.net (fake address)
 
-(I didn't finish this last method yet.)
+- *.example.com - CNAME - example.com (just some idea)
+
+You can do it using the UPSERT Action in the requests. If it does exist, it will update, else it will be created. 
 
 
 
