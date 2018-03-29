@@ -1,57 +1,64 @@
 var aws = require('aws-sdk');
-aws.config.update({ region: 'sa-east-1' });
+aws.config.update({ region: 'us-east-1' });
 var acm = new aws.ACM({apiVersion: '2015-12-08'});
 var route53 = new aws.Route53();
 var cloudfront = new aws.CloudFront({apiVersion: '2017-03-25'});
 var async = require("async");
+var sleep = require('system-sleep');
 
 var dataRequested = null;
 var dataHostedZone = null;
 var dataHostedZoneValidationProperties = null;
 var dataCloudfrontCallback = null;
+var event = null;
 
-exports.handler = (event, context, callback) =>  { //""
-    console.log(event.DomainName); 
+exports.handler = (eventt, context, callback)  => {
+    console.log("-------------------------Starting Function-------------------------"); 
+event = eventt;
+console.log(event.HostedZoneId); 
 
-    async.waterfall([
-        GetAndValidateRoute53Existence,
-        RequestCertificate,
-        AddTagToCertificate,
-        DescribeCertificateToGetDNSProperties,
-        RegisterCNAMEonRoute53,
-        CreateDistribution,
-        ChangeRoute53ARecordToCF
-    ], function (err) {
-        if (err) {
-            callback(err);
-        }
-        callback(null, 'Works!');
-    });    
+
+async.waterfall([
+    GetAndValidateRoute53Existence,
+    RequestCertificate,
+    AddTagToCertificate, 
+    DescribeCertificateToGetDNSProperties,
+    RegisterCNAMEonRoute53,
+    CreateDistribution,
+    ChangeRoute53ARecordToCF
+], function (err) {
+    if (err) {
+        callback(err);
+    }
+    callback(null, 'Works!');
+});    
 };
 
-function ChangeRoute53ARecordToCF() {
+function ChangeRoute53ARecordToCF(callback) {
     
+    console.log("-------------------------ChangeRoute53ARecordToCF-------------------------"); 
     var params = {
         ChangeBatch: {
             Changes: [
                {
                    Action: "UPSERT", 
                    ResourceRecordSet: {
-                       Name: event.DomainName, 
-                       ResourceRecords: [
-                          {
-                              Value: dataCloudfrontCallback.DomainName //like d19827391.cloudfront.com
-                          }
-                       ], 
-                       TTL: 60, 
+                       AliasTarget: {
+                           DNSName: dataCloudfrontCallback.DomainName, 
+                           EvaluateTargetHealth: false, 
+                           HostedZoneId: "Z2FDTNDATAQYW2"//this is hardcoded. It's always this hostedzone.Probably the one that solves in the IP of CF balancer, I don't know.
+                       }, 
+                       Name: event.DomainName,                        
+                       //TTL: 60, --need to take it off, if not, will get a "Invalid Input" error.
                        Type: "A"
                    }
                }
             ], 
             Comment: "WebServer on ElasticBeanstalk. This came from Lucas Schoch's Lambda."
         }, 
-        HostedZoneId: dataHostedZone.Id
-    };
+        HostedZoneId: event.HostedZoneId
+    }; 
+
     route53.changeResourceRecordSets(params, function(err, data) {
         if (err) 
         {
@@ -66,7 +73,11 @@ function ChangeRoute53ARecordToCF() {
     });
 }
 
-function CreateDistribution() {
+function CreateDistribution(callback) {
+    sleep(240000);//needed because there's no wait.for method to wait for SSL be validated (I'll change it in the future to schedule another lambda that will check if it's ready).
+    //Cert. Mngr. usually updates it in less than 2 minutes. I'll use 4. The Lambda function timeout need to be configured to 5 minutes. It should take 4:30.
+
+    console.log("-------------------------CreateDistribution-------------------------"); 
     var date = new Date();
     var current_hour = date.getHours();
     var params = {
@@ -80,9 +91,12 @@ function CreateDistribution() {
                             Forward: 'all', /* required */
                         },
                         QueryString: true, /* required */
+                        Headers:{
+                            Quantity: 0,
+                        }
                     },
                     MinTTL: 0, /* required */
-                    TargetOriginId: 'ELB-lb-MY-LB-FROM-ELASTICBEANSTALK', /* required */
+                    TargetOriginId: 'ELB-lb-YOUR-LOAD-BALANCING', /* required */
                     TrustedSigners: { /* required */
                         Enabled:  false, /* required */
                         Quantity: 0, /* required */                       
@@ -112,8 +126,8 @@ function CreateDistribution() {
                     Quantity: 1, /* required */
                     Items: [
                       {
-                          DomainName: 'ELB-lb-MY-LB-FROM-ELASTICBEANSTALK.sa-east-1.elb.amazonaws.com', /* required */
-                          Id: 'ELB-lb-MY-LB-FROM-ELASTICBEANSTALK', /* required */
+                          DomainName: 'lb-YOUR-LOAD-BALANCING.sa-east-1.elb.amazonaws.com', /* required */
+                          Id: 'ELB-lb-YOUR-LOAD-BALANCING', /* required */
                           //CustomHeaders: {
                           //    Quantity: 0, /* required */
                           //    Items: [                                
@@ -147,45 +161,7 @@ function CreateDistribution() {
                     ]
                 },
                 CacheBehaviors: {
-                    Quantity: 1, /* required */
-                    Items: [
-                      {
-                          ForwardedValues: { /* required */
-                              Cookies: { /* required */
-                                  Forward: 'all', /* required */
-                              },
-                              QueryString: true , /* required */
-                              
-                          },
-                          MinTTL: 0, /* required */
-                          PathPattern: '*', /* required */
-                          TargetOriginId: 'ELB-lb-MY-LB-FROM-ELASTICBEANSTALK', /* required */
-                          TrustedSigners: { /* required */
-                              Enabled: false, /* required */
-                              Quantity: 0, /* required */
-                          },
-                          ViewerProtocolPolicy: 'redirect-to-https', /* required */
-                          AllowedMethods: {
-                              Items: [ /* required */
-                                'GET' , 'HEAD' , 'POST' , 'PUT' , 'PATCH' , 'OPTIONS' , 'DELETE',
-                                /* more items */
-                              ],
-                              Quantity: 7, /* required */
-                              //CachedMethods: {
-                              //    Items: [ /* required */
-                              //      GET | HEAD | POST | PUT | PATCH | OPTIONS | DELETE,
-                              //      /* more items */
-                              //    ],
-                              //    Quantity: 0 /* required */
-                              //}
-                          },
-                          Compress: false,
-                          DefaultTTL: 86400,
-                          MaxTTL: 31536000,
-                          SmoothStreaming: false
-                      },
-                      /* more items */
-                    ]
+                    Quantity: 0, /* required */                    
                 },
                 HttpVersion: 'http2',
                 IsIPV6Enabled: true,
@@ -223,7 +199,9 @@ function CreateDistribution() {
     });
 }
 
-function RegisterCNAMEonRoute53() {
+function RegisterCNAMEonRoute53(callback) {
+    
+    console.log("-------------------------RegisterCNAMEonRoute53-------------------------"); 
     var params = {
         ChangeBatch: {
             Changes: [
@@ -243,7 +221,7 @@ function RegisterCNAMEonRoute53() {
             ], 
             Comment: "Certificate Manager Created by Lucas Schoch's Lambda. :)"
         }, 
-        HostedZoneId: dataHostedZone.Id
+        HostedZoneId: event.HostedZoneId
     };
     route53.changeResourceRecordSets(params, function(err, data) {
         if (err) 
@@ -259,7 +237,11 @@ function RegisterCNAMEonRoute53() {
     });
 }
 
-function DescribeCertificateToGetDNSProperties() {
+function DescribeCertificateToGetDNSProperties(callback) {
+    
+    console.log("-------------------------DescribeCertificateToGetDNSProperties-------------------------"); 
+    sleep(5000);//needed because there's no wait.for method to wait for resource record to be available.
+
     var params = {
         CertificateArn: dataRequested.CertificateArn 
     };
@@ -273,16 +255,19 @@ function DescribeCertificateToGetDNSProperties() {
         {
             console.log(data);       
             dataHostedZoneValidationProperties = data.Certificate.DomainValidationOptions[0].ResourceRecord;//contem Name - Type - Value  
+            console.log(data.Certificate.DomainValidationOptions[0]);       
+            console.log(dataHostedZoneValidationProperties.ResourceRecord);       
             callback(null);            
         }       
     });
 }
 
-function GetAndValidateRoute53Existence() {
+function GetAndValidateRoute53Existence(callback) {
+    console.log("-------------------------GetAndValidateRoute53Existence-------------------------"); 
     var params = {
-        DNSName: event.DomainName
+        Id: event.HostedZoneId
     };
-    route53.listHostedZonesByName(params, function(err, data) {
+    route53.getHostedZone(params, function(err, data) {
         if (err) 
         {
             console.log(err, err.stack);
@@ -291,8 +276,10 @@ function GetAndValidateRoute53Existence() {
         else     
         {
             console.log(data);         
-            if (data.HostedZones[0] !== 'undefined') {
-                dataHostedZone = data.HostedZones[0];
+            console.log(data.HostedZone);         
+            if (data.HostedZone !== 'undefined') {
+                dataHostedZone = data.HostedZone;
+                event.DomainName = dataHostedZone.Name.slice(0, -1);
                 callback(null);
             }
             else {
@@ -302,7 +289,8 @@ function GetAndValidateRoute53Existence() {
     });
 }
 
-function RequestCertificate() {
+function RequestCertificate(callback) {
+    console.log("-------------------------RequestCertificate-------------------------"); 
     var params = {
         DomainName: event.DomainName, /* required */
         SubjectAlternativeNames: [
@@ -323,7 +311,8 @@ function RequestCertificate() {
     });
 }
 
-function AddTagToCertificate() {
+function AddTagToCertificate(callback) {
+    console.log("-------------------------AddTagToCertificate-------------------------"); 
     var params = {
         CertificateArn: dataRequested.CertificateArn, /* required */
         Tags: [ /* required */
