@@ -92,7 +92,11 @@ function CreateDistribution(callback) {
                         },
                         QueryString: true, /* required */
                         Headers:{
-                            Quantity: 0,
+                            Quantity: 1,
+                            Items: [
+                              '*',
+                              /* more items */
+                            ]
                         }
                     },
                     MinTTL: 0, /* required */
